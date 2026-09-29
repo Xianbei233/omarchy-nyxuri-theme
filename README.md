@@ -52,6 +52,26 @@ bin/
   nyx-wallpaper-watch  inotify daemon, started from hypr autostart
 ```
 
+## Uninstall
+
+```sh
+./uninstall.sh
+```
+
+Stops the watcher, removes `~/.local/bin/nyx-*`, the autostart entry, the
+theme directory and runtime state; falls back to tokyo-night if nyxuri was
+active.
+
+## Credits
+
+- [Nyxuri](https://github.com/ech678/Nyxuri) (originally **NyxNiri**) — the
+  Material You-on-Niri desktop whose palette-driven design this theme borrows.
+  Wallpapers and the overall look-and-feel come from that project.
+- [matugen](https://github.com/InioX/matugen) — Material You palette
+  generation.
+- [Omarchy](https://omarchy.org) — the shell, theme pipeline and template
+  engine this plugs into.
+
 ## Notes
 
 - Only activates while the current theme is **nyxuri** — switching to another
