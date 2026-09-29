@@ -33,6 +33,40 @@ mkdir -p "$THEME_DIR"
 cp -a "$REPO_DIR/theme/." "$THEME_DIR/"
 ok "theme installed to $THEME_DIR"
 
+# ── 2b. Wallpapers from Nyxuri's upstream pack ─────────────────────
+# Pulled straight from ech678/wallpaper-collection (same source Nyxuri uses),
+# never vendored in this repo — the theme only needs the set, not the bytes.
+WALLPAPER_REPO="https://github.com/ech678/wallpaper-collection.git"
+WALLPAPER_MIRROR="https://gh-proxy.org/https://github.com/ech678/wallpaper-collection.git"
+BG_DIR="$THEME_DIR/backgrounds"
+
+fetch_wallpapers() {
+    local tmp
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' RETURN
+    for url in "$WALLPAPER_REPO" "$WALLPAPER_MIRROR"; do
+        say "pulling wallpapers from $url"
+        if git clone --depth 1 --filter=blob:none "$url" "$tmp/wc" 2>/dev/null; then
+            mkdir -p "$BG_DIR"
+            # Flatten: copy stills + video into the theme's backgrounds dir.
+            find "$tmp/wc" -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.webp' \
+                -o -iname '*.mp4' -o -iname '*.webm' -o -iname '*.mkv' \) \
+                -exec cp {} "$BG_DIR/" \;
+            rm -rf "$tmp"
+            return 0
+        fi
+    done
+    return 1
+}
+
+if [[ -d $BG_DIR ]] && compgen -G "$BG_DIR/*" >/dev/null; then
+    ok "wallpapers already present in $BG_DIR ($(find "$BG_DIR" -type f | wc -l) files)"
+else
+    say "fetching wallpapers from Nyxuri's wallpaper-collection"
+    fetch_wallpapers || err "wallpaper download failed — install still works, you can add images to $BG_DIR later"
+    [[ -d $BG_DIR ]] && ok "downloaded $(find "$BG_DIR" -type f | wc -l) wallpapers"
+fi
+
 # ── 3. Scripts ──────────────────────────────────────────────────────
 mkdir -p "$BIN_DIR" "$STATE_DIR"
 install -m755 "$REPO_DIR/bin/nyx-recolor"        "$BIN_DIR/nyx-recolor"

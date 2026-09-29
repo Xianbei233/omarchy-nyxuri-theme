@@ -46,11 +46,19 @@ theme/
   hyprland.lua       border colors mapped from the palette
   chromium.theme     browser accent (r,g,b)
   preview.png        theme-picker preview
-  backgrounds/       bundled wallpapers (stills + video)
+  backgrounds/       wallpapers, fetched from Nyxuri's wallpaper-collection
 bin/
   nyx-recolor        palette generation + push to shell/terminals/GTK/browser
   nyx-wallpaper-watch  inotify daemon, started from hypr autostart
 ```
+
+## Wallpapers
+
+Wallpapers are **not bundled** in this repo — `install.sh` clones them from
+Nyxuri's [ech678/wallpaper-collection](https://github.com/ech678/wallpaper-collection)
+(with a China mirror fallback) into the theme's `backgrounds/` directory.
+Drop your own files in there too; anything in that folder shows up in the
+`SUPER+CTRL+SPACE` picker and feeds the recolor pipeline.
 
 ## Uninstall
 
