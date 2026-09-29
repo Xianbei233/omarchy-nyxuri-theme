@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Watch Omarchy's current background symlink; when it changes, recolor the
+# nyxuri theme from the new wallpaper (Material You via noctalia).
+
+set -uo pipefail
+
+LINK_DIR="$HOME/.local/state/omarchy/current"
+LOG="${XDG_STATE_HOME:-$HOME/.local/state}/nyxuri/watch.log"
+LAST=""
+
+mkdir -p "$(dirname "$LOG")"
+
+recolor() {
+    local target
+    target=$(readlink -f "$LINK_DIR/background" 2>/dev/null || true)
+    [[ -n $target && $target != "$LAST" ]] || return 0
+    LAST="$target"
+    ~/.local/bin/nyx-recolor "$target" >>"$LOG" 2>&1
+}
+
+# Initial sync on start.
+recolor
+
+# The symlink is replaced atomically by ln -nsf, so watch the directory for
+# link creation/moves rather than the link itself.
+inotifywait -m -e moved_to -e create -e delete -e attrib --format '%w%f' "$LINK_DIR" 2>/dev/null \
+    | while read -r changed; do
+        [[ $changed == *background ]] || continue
+        sleep 0.3   # let the shell finish writing
+        recolor
+    done

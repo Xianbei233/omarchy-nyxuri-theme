@@ -1,0 +1,210 @@
+#!/usr/bin/env bash
+# nyx-recolor — regenerate the "nyxuri" Omarchy theme's colors.toml from the
+# current wallpaper via Noctalia's Material You palette generator, then push
+# the new palette into the live session (shell IPC + terminal/hyprland reload).
+#
+# Light wallpapers produce light palettes; dark wallpapers dark ones.
+# Usage: nyx-recolor [wallpaper]     (defaults to current background)
+
+set -euo pipefail
+
+THEME_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/themes/nyxuri"
+CURRENT_THEME_PATH="$HOME/.local/state/omarchy/current/theme"
+CURRENT_BG_LINK="$HOME/.local/state/omarchy/current/background"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/nyxuri"
+LOG="$STATE_DIR/recolor.log"
+mkdir -p "$STATE_DIR"
+
+WALLPAPER="${1:-$(readlink -f "$CURRENT_BG_LINK" 2>/dev/null || true)}"
+
+if [[ -z ${WALLPAPER:-} || ! -f $WALLPAPER ]]; then
+    echo "nyx-recolor: no usable wallpaper ($WALLPAPER)" >&2
+    exit 1
+fi
+
+# mpv frame for video wallpapers; stills pass straight through.
+IMAGE="$WALLPAPER"
+TEMP_IMAGE=""
+if [[ ${WALLPAPER,,} =~ \.(mp4|m4v|mov|webm|mkv|avi)$ ]]; then
+    TEMP_IMAGE="$(mktemp --suffix=.png)"
+    IMAGE="$TEMP_IMAGE"
+    ffmpeg -y -loglevel error -ss 2 -i "$WALLPAPER" -frames:v 1 "$IMAGE" || {
+        echo "nyx-recolor: ffmpeg frame extract failed" >&2
+        exit 1
+    }
+fi
+
+PALETTE_JSON="$(mktemp --suffix=.json)"
+trap 'rm -f "${TEMP_IMAGE:-}" "$PALETTE_JSON"' EXIT
+
+# Material You palette via matugen (omarchy-native path — no Noctalia daemon).
+matugen image "$IMAGE" --prefer saturation --json hex > "$PALETTE_JSON" 2>/dev/null
+
+# Choose dark/light by wallpaper luminance (same R+G+B > 382 rule omarchy uses).
+MODE=$(magick "$IMAGE" -resize 64x64 -colorspace gray -format "%[mean]" info: 2>/dev/null | python3 -c "
+import sys
+mean = float(sys.stdin.read() or 0)
+print('light' if mean > 32768 else 'dark')
+" || echo dark)
+
+echo "$(date '+%F %T') wallpaper=$WALLPAPER mode=$MODE" >> "$LOG"
+
+MODE="$MODE" PALETTE_JSON="$PALETTE_JSON" python3 - <<'PYEOF'
+import json, os, sys
+
+mode = os.environ["MODE"]
+data = json.load(open(os.environ["PALETTE_JSON"]))
+# matugen shape: colors.<token>.<mode>.color
+c = data["colors"]
+p = {k: v[mode]["color"] for k, v in c.items() if isinstance(v, dict) and mode in v}
+other = "light" if mode == "dark" else "dark"
+po = {k: v[other]["color"] for k, v in c.items() if isinstance(v, dict) and other in v}
+
+def hex_rgb(v):
+    v = v.lstrip("#")
+    return int(v[0:2], 16), int(v[2:4], 16), int(v[4:6], 16)
+
+def mix(a, b, amount):
+    ar, ag, ab = hex_rgb(a); br, bg, bb = hex_rgb(b)
+    f = amount / 100.0
+    return "#%02x%02x%02x" % (round(ar*(1-f)+br*f), round(ag*(1-f)+bg*f), round(ab*(1-f)+bb*f))
+
+def h(k): return p[k]
+
+# Map Material You tokens onto omarchy colors.toml keys.
+# Terminal ANSI slots get a matching bright ramp from the same palette.
+colors = {
+    "mode": mode,
+    "accent": h("primary"),
+    "selection": h("surface_variant"),
+    "muted": h("surface_variant"),
+    "background": h("surface"),
+    "dark_background": h("surface_container_lowest") if mode=="dark" else h("surface_dim"),
+    "darker_background": h("surface_container_lowest") if mode=="dark" else h("surface_dim"),
+    "lighter_background": h("surface_container_high"),
+    "foreground": h("on_surface"),
+    "dark_foreground": h("outline"),
+    "light_foreground": h("on_surface_variant"),
+    # bright_foreground is the STRONGEST foreground (bold text, cursor, bar
+    # text on accent). In light mode that means darker, not paler.
+    "bright_foreground": h("on_surface") if mode=="light" else h("inverse_surface"),
+    "red": h("error"),
+    "yellow": h("tertiary"),
+    "orange": h("on_tertiary_container"),
+    "green": h("secondary"),
+    "cyan": h("on_secondary_container"),
+    "blue": h("primary"),
+    "magenta": h("tertiary"),
+    "brown": h("on_error_container"),
+    # bright_* = stronger versions of the base colors. In light mode darken
+    # toward black so ANSI bright stays readable on a light terminal.
+    "bright_red": mix(h("error"), "#000000", 30) if mode=="light" else h("error_container"),
+    "bright_yellow": mix(h("tertiary"), "#000000", 30) if mode=="light" else h("tertiary_container"),
+    "bright_green": mix(h("secondary"), "#000000", 30) if mode=="light" else h("secondary_container"),
+    "bright_cyan": mix(h("on_secondary_container"), "#000000", 0) if mode=="light" else h("secondary_container"),
+    "bright_blue": mix(h("primary"), "#000000", 30) if mode=="light" else h("primary_container"),
+    "bright_magenta": mix(h("tertiary"), "#000000", 30) if mode=="light" else h("tertiary_container"),
+}
+
+order = ["mode","accent","selection","muted",
+         "background","dark_background","darker_background","lighter_background",
+         "foreground","dark_foreground","light_foreground","bright_foreground",
+         "red","yellow","orange","green","cyan","blue","magenta","brown",
+         "bright_red","bright_yellow","bright_green","bright_cyan","bright_blue","bright_magenta"]
+
+out = []
+for k in order:
+    v = colors[k]
+    if k == "mode":
+        out.append(f'mode = "{v}"\n')
+    else:
+        out.append(f'{k} = "{v}"')
+
+theme_dir = os.environ.get("THEME_DIR") or os.path.expanduser("~/.config/omarchy/themes/nyxuri")
+path = os.path.join(theme_dir, "colors.toml")
+with open(path, "w") as f:
+    f.write("\n".join(out) + "\n")
+
+# Render the matching hyprland.lua borders (primary accent, tertiary group, error locked).
+hypr = f'''-- Nyxuri (Material You) theme for Hyprland. Auto-generated by nyx-recolor.
+local primary = "rgb({p["primary"].lstrip("#")})"
+local surface_variant = "rgb({p["surface_variant"].lstrip("#")})"
+local tertiary = "rgb({p["tertiary"].lstrip("#")})"
+local error = "rgb({p["error"].lstrip("#")})"
+local on_surface = "rgb({p["on_surface"].lstrip("#")})"
+local on_error = "rgb({p["on_error"].lstrip("#")})"
+
+hl.config({{
+  general = {{
+    col = {{
+      active_border = primary,
+      inactive_border = surface_variant,
+    }},
+  }},
+
+  group = {{
+    col = {{
+      border_active = tertiary,
+      border_inactive = surface_variant,
+      border_locked_active = error,
+      border_locked_inactive = surface_variant,
+    }},
+
+    groupbar = {{
+      col = {{
+        active = tertiary,
+        inactive = surface_variant,
+        locked_active = error,
+        locked_inactive = surface_variant,
+      }},
+      text_color = primary,
+      text_color_inactive = on_surface,
+      text_color_locked_active = on_error,
+      text_color_locked_inactive = on_surface,
+    }},
+  }},
+}})
+'''
+with open(os.path.join(theme_dir, "hyprland.lua"), "w") as f:
+    f.write(hypr)
+
+# Browser accent color (r,g,b) — follow the palette's primary.
+r, g, b = hex_rgb(p["primary"])
+with open(os.path.join(theme_dir, "chromium.theme"), "w") as f:
+    f.write(f"{r},{g},{b}\n")
+
+print(f"colors.toml + hyprland.lua regenerated ({mode})")
+PYEOF
+
+# If nyxuri is the current theme, sync the new palette into the live dir and
+# tell the shell + terminals + hyprland to pick it up.
+if [[ "$(cat "$HOME/.local/state/omarchy/current/theme.name" 2>/dev/null)" == "nyxuri" ]]; then
+    cp -a "$THEME_DIR/colors.toml" "$THEME_DIR/hyprland.lua" "$CURRENT_THEME_PATH/" 2>/dev/null || true
+
+    # Re-render derived files (terminal/btop/gum/etc.): templates only render
+    # for files that DON'T already exist in next-theme, so stage just the
+    # palette — never carry shell.toml across or a stale one would freeze
+    # the bar colors on the previous wallpaper's scheme.
+    NEXT_DIR="$(dirname "$CURRENT_THEME_PATH")/next-theme"
+    rm -rf "$NEXT_DIR"
+    mkdir -p "$NEXT_DIR"
+    cp "$THEME_DIR/colors.toml" "$NEXT_DIR/colors.toml"
+    rm -f "$NEXT_DIR/shell.toml"
+    omarchy-theme-set-templates >/dev/null 2>&1 || true
+    cp -a "$NEXT_DIR/." "$CURRENT_THEME_PATH/" 2>/dev/null || true
+    rm -rf "$NEXT_DIR"
+
+    colors_b64=$(base64 -w 0 "$CURRENT_THEME_PATH/colors.toml" 2>/dev/null || true)
+    shell_b64=""
+    [[ -f $CURRENT_THEME_PATH/shell.toml ]] && shell_b64=$(base64 -w 0 "$CURRENT_THEME_PATH/shell.toml")
+
+    omarchy-shell -q shell applyTheme "$colors_b64" "$shell_b64" >/dev/null 2>&1 || true
+    omarchy-restart-terminal >/dev/null 2>&1 || true
+    hyprctl reload >/dev/null 2>&1 || true
+    # GTK color-scheme + icon theme follow the palette's dark/light mode.
+    omarchy-theme-set-gnome >/dev/null 2>&1 || true
+    # Browsers (Chromium/Chrome/Edge/Brave) get the accent color + color-scheme.
+    omarchy-theme-set-browser >/dev/null 2>&1 || true
+fi
+
+echo "nyx-recolor: applied $MODE palette from $(basename "$WALLPAPER")"
